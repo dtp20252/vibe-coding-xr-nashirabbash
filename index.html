@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>AED Interactive Simulation | XR Blocks</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <link
+      type="text/css"
+      rel="stylesheet"
+      href="https://xrblocks.github.io/css/xr.css"
+    />
+    <script>
+      window.litDisableBundleWarning = true;
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "troika-three-text": "https://cdn.jsdelivr.net/gh/protectwise/troika@028b81cf308f0f22e5aa8e78196be56ec1997af5/packages/troika-three-text/src/index.js",
+          "troika-three-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-three-utils/src/index.js",
+          "troika-worker-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-worker-utils/src/index.js",
+          "bidi-js": "https://esm.sh/bidi-js@%5E1.0.2?target=es2022",
+          "webgl-sdf-generator": "https://esm.sh/webgl-sdf-generator@1.1.1/es2022/webgl-sdf-generator.mjs",
+          "lit": "https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js",
+          "lit/": "https://esm.run/lit@3/",
+          "xrblocks": "https://cdn.jsdelivr.net/npm/xrblocks@0.11.0/build/xrblocks.js",
+          "xrblocks/addons/": "https://cdn.jsdelivr.net/npm/xrblocks@0.11.0/build/addons/",
+          "@google/genai": "https://cdn.jsdelivr.net/npm/@google/genai/+esm"
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <script type="module">
+      import "xrblocks/addons/simulator/SimulatorAddons.js";
+      import * as THREE from "three";
+      import * as xb from "xrblocks";
+
+      // Strict Clinical Sequence Data based on AHA / ERC Guidelines
+      const STEPS = [
+        {
+          name: "Scene Safety",
+          victim: "Ensure the area is safe. Do not approach if hazardous.",
+          aed: null,
+        },
+        {
+          name: "Check Responsiveness",
+          victim: "Tap shoulders firmly. Shout: 'Are you okay?'",
+          aed: null,
+        },
+        {
+          name: "Call for Help",
+          victim: "Call emergency services (119 / 112). Send someone for AED.",
+          aed: null,
+        },
+        {
+          name: "Check Breathing",
+          victim: "Tilt head back. Look, listen, feel for 10 seconds.",
+          aed: null,
+        },
+        {
+          name: "Begin CPR",
+          victim: "30 chest compressions, 2 rescue breaths. Rate: 100–120/min.",
+          aed: null,
+        },
+        {
+          name: "Power On AED",
+          victim: null,
+          aed: "Press the green ON button. Listen to voice prompts.",
+        },
+        {
+          name: "Attach Electrode Pads",
+          victim: "Expose bare chest. Dry skin if wet. Remove clothing.",
+          aed: "Attach pad 1: right side of chest below collarbone. Attach pad 2: left side, below armpit.",
+        },
+        {
+          name: "Analyze Heart Rhythm",
+          victim: null,
+          aed: "Do NOT touch patient. Press ANALYZE button if prompted.",
+        },
+        {
+          name: "Deliver Shock",
+          victim: "Ensure no one is touching patient before shock.",
+          aed: "Stand clear! Press SHOCK button when prompted.",
+        },
+        {
+          name: "Resume CPR",
+          victim: "Immediately resume CPR for 2 minutes after shock.",
+          aed: null,
+        },
+        {
+          name: "Follow AED Prompts",
+          victim: null,
+          aed: "Continue following AED voice guidance until EMS arrives.",
+        },
+      ];
+
+      /**
+       * AED Simulator managing the interactive logic, rendering, and workflow.
+       */
+      class AEDSimulation extends xb.Script {
+        constructor() {
+          super();
+          this.currentStep = 0;
+          this.raycaster = new THREE.Raycaster();
+          this.isProcessingAI = false;
+        }
+
+        init() {
+          this.addLights();
+          this.createVictim();
+          this.createAED();
+          this.createMainUI();
+          this.createHoverUI();
+          this.createAIPanel();
+
+          this.updateMainUI();
+        }
+
+        /**
+         * Adds basic illumination to the scene.
+         */
+        addLights() {
+          this.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2));
+          const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+          dirLight.position.set(2, 5, 2);
+          dirLight.castShadow = true;
+          this.add(dirLight);
+        }
+
+        /**
+         * Constructs a rudimentary humanoid victim programmatically.
+         */
+        createVictim() {
+          this.victimGroup = new THREE.Group();
+          this.victimGroup.userData = { isTarget: true, name: "victim" };
+
+          const skinMaterial = new THREE.MeshPhongMaterial({ color: 0xffccaa });
+          const shirtMaterial = new THREE.MeshPhongMaterial({
+            color: 0x3b82f6,
+          });
+          const pantsMaterial = new THREE.MeshPhongMaterial({
+            color: 0x374151,
+          });
+
+          // Head
+          const head = new THREE.Mesh(
+            new THREE.SphereGeometry(0.12, 32, 32),
+            skinMaterial,
+          );
+          head.position.set(0, 0.7, 0);
+          this.victimGroup.add(head);
+
+          // Torso
+          const torso = new THREE.Mesh(
+            new THREE.BoxGeometry(0.35, 0.5, 0.2),
+            shirtMaterial,
+          );
+          torso.position.set(0, 0.35, 0);
+          this.victimGroup.add(torso);
+
+          // Legs
+          const leftLeg = new THREE.Mesh(
+            new THREE.BoxGeometry(0.14, 0.5, 0.14),
+            pantsMaterial,
+          );
+          leftLeg.position.set(-0.09, -0.15, 0);
+          this.victimGroup.add(leftLeg);
+
+          const rightLeg = new THREE.Mesh(
+            new THREE.BoxGeometry(0.14, 0.5, 0.14),
+            pantsMaterial,
+          );
+          rightLeg.position.set(0.09, -0.15, 0);
+          this.victimGroup.add(rightLeg);
+
+          // Arms
+          const leftArm = new THREE.Mesh(
+            new THREE.BoxGeometry(0.1, 0.45, 0.1),
+            skinMaterial,
+          );
+          leftArm.position.set(-0.25, 0.3, 0);
+          this.victimGroup.add(leftArm);
+
+          const rightArm = new THREE.Mesh(
+            new THREE.BoxGeometry(0.1, 0.45, 0.1),
+            skinMaterial,
+          );
+          rightArm.position.set(0.25, 0.3, 0);
+          this.victimGroup.add(rightArm);
+
+          // Lay the victim down on the floor
+          this.victimGroup.rotation.x = -Math.PI / 2;
+          this.victimGroup.position.set(0, 0.1, -xb.user.objectDistance - 0.5);
+
+          this.add(this.victimGroup);
+        }
+
+        /**
+         * Constructs a simple AED device programmatically.
+         */
+        createAED() {
+          this.aedGroup = new THREE.Group();
+          this.aedGroup.userData = { isTarget: true, name: "aed" };
+
+          const casingMaterial = new THREE.MeshPhongMaterial({
+            color: 0xfacc15,
+          }); // Yellow
+          const screenMaterial = new THREE.MeshPhongMaterial({
+            color: 0x111111,
+          });
+          const greenButtonMat = new THREE.MeshPhongMaterial({
+            color: 0x22c55e,
+          });
+          const redButtonMat = new THREE.MeshPhongMaterial({ color: 0xef4444 });
+
+          // Main body
+          const body = new THREE.Mesh(
+            new THREE.BoxGeometry(0.25, 0.08, 0.25),
+            casingMaterial,
+          );
+          body.position.set(0, 0.04, 0);
+          this.aedGroup.add(body);
+
+          // Screen
+          const screen = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.15, 0.1),
+            screenMaterial,
+          );
+          screen.rotation.x = -Math.PI / 2;
+          screen.position.set(0, 0.081, -0.04);
+          this.aedGroup.add(screen);
+
+          // ON Button (Green)
+          const onButton = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.015, 0.015, 0.02),
+            greenButtonMat,
+          );
+          onButton.position.set(-0.08, 0.08, 0.06);
+          this.aedGroup.add(onButton);
+
+          // Shock Button (Red)
+          const shockButton = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.02, 0.02, 0.02),
+            redButtonMat,
+          );
+          shockButton.position.set(0.06, 0.08, 0.06);
+          this.aedGroup.add(shockButton);
+
+          // Position AED next to the victim
+          this.aedGroup.position.set(0.7, 0, -xb.user.objectDistance - 0.4);
+
+          this.add(this.aedGroup);
+        }
+
+        /**
+         * Creates the primary HUD to control the simulation sequence.
+         */
+        createMainUI() {
+          this.mainPanel = new xb.SpatialPanel({
+            width: 1.4,
+            height: 0.9,
+            backgroundColor: "#1e293be6", // Dark slate
+            useDefaultPosition: false,
+          });
+
+          // Place panel floating in the air, slightly to the left
+          this.mainPanel.position.set(-0.8, 1.4, -xb.user.objectDistance);
+          this.mainPanel.rotation.y = Math.PI / 6;
+          this.add(this.mainPanel);
+
+          const grid = this.mainPanel.addGrid();
+
+          // Header
+          grid.addRow({ weight: 0.2 }).addText({
+            text: "AED Clinical Workflow Training",
+            fontSize: 0.08,
+            fontColor: "#38bdf8",
+          });
+
+          // Progress Indicator
+          this.progressText = grid.addRow({ weight: 0.2 }).addText({
+            text: "Step 1 of 11: Scene Safety",
+            fontSize: 0.06,
+            fontColor: "#f8fafc",
+          });
+
+          // Instruction Text
+          this.instructionText = grid.addRow({ weight: 0.3 }).addText({
+            text: "Target the victim or AED with your gaze to see specific instructions.",
+            fontSize: 0.05,
+            fontColor: "#cbd5e1",
+          });
+
+          // Control Buttons
+          const btnRow = grid.addRow({ weight: 0.3 });
+
+          this.resetBtn = btnRow.addCol({ weight: 0.4 }).addTextButton({
+            text: "Restart",
+            backgroundColor: "#ef4444",
+            fontColor: "#ffffff",
+            fontSize: 0.05,
+          });
+          this.resetBtn.onTriggered = () => this.resetSimulation();
+
+          btnRow.addCol({ weight: 0.2 }); // Spacer
+
+          this.nextBtn = btnRow.addCol({ weight: 0.4 }).addTextButton({
+            text: "Next Step",
+            backgroundColor: "#10b981",
+            fontColor: "#ffffff",
+            fontSize: 0.05,
+          });
+          this.nextBtn.onTriggered = () => this.nextStep();
+        }
+
+        /**
+         * Creates the Virtual AI Instructor panel.
+         */
+        createAIPanel() {
+          this.aiPanel = new xb.SpatialPanel({
+            width: 1.4,
+            height: 0.9,
+            backgroundColor: "#1e293be6",
+            useDefaultPosition: false,
+          });
+
+          // Place panel floating in the air, slightly to the right
+          this.aiPanel.position.set(0.8, 1.4, -xb.user.objectDistance);
+          this.aiPanel.rotation.y = -Math.PI / 6;
+          this.add(this.aiPanel);
+
+          const grid = this.aiPanel.addGrid();
+
+          // Header
+          grid.addRow({ weight: 0.15 }).addText({
+            text: "Virtual AI Instructor",
+            fontSize: 0.08,
+            fontColor: "#a855f7",
+          });
+
+          // Response Display
+          const responseRow = grid.addRow({ weight: 0.65 });
+          this.aiResponseDisplay = new xb.ScrollingTroikaTextView({
+            text: "Click the button below to get real-world clinical tips for this step.",
+            fontSize: 0.05,
+          });
+          responseRow.add(this.aiResponseDisplay);
+
+          // Control Button
+          const btnRow = grid.addRow({ weight: 0.2 });
+          this.aiBtn = btnRow.addCol({ weight: 1.0 }).addTextButton({
+            text: "✨ Ask AI Instructor for Tips",
+            backgroundColor: "#9333ea",
+            fontColor: "#ffffff",
+            fontSize: 0.05,
+          });
+          this.aiBtn.onTriggered = () => this.askAI();
+        }
+
+        /**
+         * Queries the Gemini AI for tips on the current step.
+         */
+        async askAI() {
+          if (this.isProcessingAI) return;
+          if (!xb.core.ai?.isAvailable()) {
+            this.aiResponseDisplay.setText(
+              "⚠️ AI is not available. Please set your Gemini API key in the simulator settings.",
+            );
+            return;
+          }
+
+          this.isProcessingAI = true;
+          this.aiResponseDisplay.setText("Thinking... ✨");
+
+          const step = STEPS[this.currentStep];
+          const prompt = `I am a student in a VR AED training simulation. I am currently on the step: "${step.name}".
+          Victim instruction: ${step.victim || "None"}.
+          AED instruction: ${step.aed || "None"}.
+          Provide 1 or 2 concise, practical, real-world clinical tips or common mistakes to avoid for this specific step. Keep it under 3 sentences.`;
+
+          try {
+            const response = await xb.core.ai.query({
+              type: "multiPart",
+              parts: [{ text: prompt }],
+            });
+            this.aiResponseDisplay.setText(`Instructor: ${response.text}`);
+          } catch (error) {
+            this.aiResponseDisplay.setText(`❌ Error: ${error.message}`);
+          }
+
+          this.isProcessingAI = false;
+        }
+
+        /**
+         * Creates the contextual tooltip panel that appears during gaze interactions.
+         */
+        createHoverUI() {
+          this.hoverPanel = new xb.SpatialPanel({
+            width: 0.9,
+            height: 0.3,
+            backgroundColor: "#0f172ae6", // Very dark blue/slate
+            useDefaultPosition: false,
+          });
+          this.hoverPanel.visible = false;
+          this.add(this.hoverPanel);
+
+          const grid = this.hoverPanel.addGrid();
+          this.hoverTextUI = grid.addRow({ weight: 1.0 }).addText({
+            text: "",
+            fontSize: 0.045,
+            fontColor: "#fbbf24", // Amber
+          });
+        }
+
+        /**
+         * Advances the simulation to the next step.
+         */
+        nextStep() {
+          if (this.currentStep < STEPS.length - 1) {
+            this.currentStep++;
+            this.updateMainUI();
+          }
+        }
+
+        /**
+         * Resets the simulation to the beginning.
+         */
+        resetSimulation() {
+          this.currentStep = 0;
+          this.updateMainUI();
+        }
+
+        /**
+         * Updates the Main UI labels based on the current step.
+         */
+        updateMainUI() {
+          const stepData = STEPS[this.currentStep];
+          this.progressText.setText(
+            `Step ${this.currentStep + 1} of ${STEPS.length}: ${stepData.name}`,
+          );
+
+          if (this.currentStep === STEPS.length - 1) {
+            this.nextBtn.setText("Complete");
+          } else {
+            this.nextBtn.setText("Next Step");
+          }
+
+          // Reset AI panel text on step change
+          if (this.aiResponseDisplay) {
+            this.aiResponseDisplay.setText(
+              "Click the button below to get real-world clinical tips for this step.",
+            );
+          }
+        }
+
+        /**
+         * Toggles a subtle emissive glow on targets when hovered/gazed at.
+         */
+        setHighlight(group, active) {
+          group.traverse((child) => {
+            if (child.isMesh && child.material) {
+              if (active) {
+                child.material.emissive.setHex(0x334455); // Subtle glow
+              } else {
+                child.material.emissive.setHex(0x000000);
+              }
+            }
+          });
+        }
+
+        /**
+         * Core update loop. Handles gaze / raycast detection to show contextual steps.
+         */
+        update() {
+          // Reset highlights and hide hover tooltip every frame
+          this.setHighlight(this.victimGroup, false);
+          this.setHighlight(this.aedGroup, false);
+          this.hoverPanel.visible = false;
+
+          let hitObject = null;
+          let hitPoint = null;
+
+          // 1. Check for hits using controller pointers (XR VR/AR mode)
+          for (const controller of xb.core.input.controllers) {
+            const intersections =
+              xb.core.input.intersectionsForController.get(controller);
+            if (intersections && intersections.length > 0) {
+              hitObject = intersections[0].object;
+              hitPoint = intersections[0].point;
+              break;
+            }
+          }
+
+          // 2. Fallback to Camera Gaze (Desktop Simulator mode)
+          if (!hitObject) {
+            const dir = new THREE.Vector3();
+            xb.core.camera.getWorldDirection(dir);
+            this.raycaster.set(xb.core.camera.position, dir);
+
+            const intersects = this.raycaster.intersectObjects(
+              [this.victimGroup, this.aedGroup],
+              true,
+            );
+            if (intersects.length > 0) {
+              hitObject = intersects[0].object;
+              hitPoint = intersects[0].point;
+            }
+          }
+
+          // Process the hit object to display contextual information
+          if (hitObject) {
+            // Traverse up to find the group containing userData
+            let root = hitObject;
+            while (
+              root.parent &&
+              root.parent !== this &&
+              !root.userData.isTarget
+            ) {
+              root = root.parent;
+            }
+
+            if (root.userData && root.userData.isTarget) {
+              this.setHighlight(root, true);
+
+              const stepData = STEPS[this.currentStep];
+              let textToShow = null;
+
+              if (root.userData.name === "victim" && stepData.victim) {
+                textToShow = `[Patient] ${stepData.victim}`;
+              } else if (root.userData.name === "aed" && stepData.aed) {
+                textToShow = `[AED] ${stepData.aed}`;
+              }
+
+              // Display the spatial tooltip near the targeted object
+              if (textToShow) {
+                this.hoverPanel.visible = true;
+                this.hoverTextUI.setText(textToShow);
+
+                // Position panel slightly above the targeted object
+                const yOffset = root.userData.name === "victim" ? 0.7 : 0.4;
+                this.hoverPanel.position
+                  .copy(root.position)
+                  .add(new THREE.Vector3(0, yOffset, 0));
+
+                // Make the panel face the user
+                this.hoverPanel.lookAt(xb.core.camera.position);
+              }
+            }
+          }
+        }
+      }
+
+      // Initialize the simulation
+      document.addEventListener("DOMContentLoaded", () => {
+        const options = new xb.Options({
+          antialias: true,
+          simulator: { defaultMode: xb.SimulatorMode.POSE },
+        });
+        options.setAppTitle("AED Simulator");
+        options.enableUI();
+        options.enableAI();
+
+        xb.add(new AEDSimulation());
+        xb.init(options);
+      });
+    </script>
+  </body>
+</html>
